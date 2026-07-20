@@ -32,44 +32,67 @@ pixel.brightness = 0.1
 data = ""
 bme280.sea_level_pressure = 1014 #double check this
 dropaltitude = 23000 #30000. Also possibly use later in while loop?
-droptime = (20*60) # If not dropped by this elapsed time, release anyway
+droptime = (140*60) # CONFIRM: must be longer than the predicted climb to dropaltitude, or it fires first
 dropped = False # Have we dropped the balloon? i.e., released the ser #
 my_servo.angle = 180
 maxaltitude = 0 #accumulates later, check
+groundaltitude = None # pad elevation, set on the first GPS fix
+launchtime = None # droptime counts from here, not from power-up
 last_print = time.monotonic()
-#fp = open('/datalog.txt', 'a')
+try:
+    fp = open('/datalog.txt', 'a')
+except OSError as e:
+    fp = None
+    print('LOG OPEN FAILED, is A0 grounded?:', e)
 while True:
-    #Read the GPS output from UART0
-    gps.update()
+    try:
+        #Read the GPS output from UART0
+        gps.update()
 
 
-    current = time.monotonic() #whats the difference between last_print and current?? Don't understand the starting conditional -- SW
-    if current - last_print >= 1.0: 
-        data = str(current) + ',' + str(dropped) + ','
+        current = time.monotonic() #whats the difference between last_print and current?? Don't understand the starting conditional -- SW
+        if current - last_print >= 1.0:
+            data = str(current) + ',' + str(dropped) + ','
 
-        # Read the BME280
-        data += str(bme280.temperature)+','+str(bme280.humidity)+','+str(bme280.pressure)+','+str(bme280.altitude)+','
-        if bme280.altitude > maxaltitude:
-            maxaltitude = bme280.altitude
+            # Read the BME280
+            data += str(bme280.temperature)+','+str(bme280.humidity)+','+str(bme280.pressure)+','+str(bme280.altitude)+','
 
-        if gps.has_fix: #what does have fix mean?? - SW
-            data += str(gps.latitude) +','+ str(gps.longitude) + ',' + str(gps.altitude_m)
-        else:
-            data += 'nofix, nofix, nofix'
-
-
-        last_print = current
-        # write this data string to a file...
-        print(data)
-
-        #fp.write(data)
-        #fp.flush()
-        pixel.fill((0, 100, 0)) #why this? - SW
-        time.sleep(0.1)
-        pixel.fill((0,0,0))
+            if gps.has_fix: #what does have fix mean?? - SW
+                data += str(gps.latitude) +','+ str(gps.longitude) + ',' + str(gps.altitude_m)
+                # the BME280 is only spec'd to 300 hPa (~9 km), so altitude logic runs off GPS
+                if gps.altitude_m > maxaltitude:
+                    maxaltitude = gps.altitude_m
+                if groundaltitude is None:
+                    groundaltitude = gps.altitude_m
+                if launchtime is None and gps.altitude_m > groundaltitude + 300:
+                    launchtime = current
+            else:
+                data += 'nofix, nofix, nofix'
 
 
-        if bme280.altitude < (maxaltitude - 100) or time.monotonic() > droptime: #why not just drop altitude
-            dropped = True
-            my_servo.angle = 0
+            last_print = current
+            # write this data string to a file...
+            print(data)
+
+            if fp is not None:
+                fp.write(data + '\n')
+                fp.flush()
+            pixel.fill((0, 100, 0)) #why this? - SW
+            time.sleep(0.1)
+            pixel.fill((0,0,0))
+
+
+            if not dropped:
+                if gps.has_fix and gps.altitude_m > dropaltitude:
+                    dropped = True
+                elif gps.has_fix and gps.altitude_m < (maxaltitude - 250):
+                    dropped = True
+                elif launchtime is not None and current - launchtime > droptime:
+                    dropped = True
+                if dropped:
+                    my_servo.angle = 0
+
+    except Exception as e: # one bad sensor read must not end the flight
+        print('loop error:', e)
+        time.sleep(0.5)
 
